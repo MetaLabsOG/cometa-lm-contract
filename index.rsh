@@ -10,11 +10,6 @@ const MAX_FLAT_ALGO_CREATION_FEE = 1_000_000_000; // 1000 ALGO
 // Defines the least non-zero fee percentage (fee = 1 is 0.01%, fee = FEE_RATIO is 100%).
 const FEE_RATIO = 10000;
 
-// We have one "virtual" token always staked to avoid potential
-// * division by zero
-// * rewards emission loss
-const VIRTUAL_STAKE = 1;
-
 // We return current round from every API call to enable testing
 const TimedResult = (T) =>
   Struct([
@@ -40,10 +35,10 @@ const InitialStateObj = {
   beginBlock: UInt,
   // Last possible block when the farm will cease to provide rewards.
   endBlock: UInt,
-  // *rewardToken* distributed per block.
-  rewardPerBlock: UInt,
-  // ALGO distributed per block. Usually used for Algorand Foundation's incetives.
-  extraAlgoRewardPerBlock: UInt,
+  // *rewardToken* distributed
+  totalRewardAmount: UInt,
+  // ALGO distributed . Usually used for Algorand Foundation's incetives.
+  totalAlgoRewardAmount: UInt,
   // Length of lock in seconds. If it is 0, there is no lock.
   lockLengthBlocks: UInt,
 };
@@ -56,8 +51,8 @@ const InitialState = Struct([
   ["rewardToken", Token],
   ["beginBlock", UInt],
   ["endBlock", UInt],
-  ["rewardPerBlock", UInt],
-  ["extraAlgoRewardPerBlock", UInt],
+  ["totalRewardAmount", UInt],
+  ["totalAlgoRewardAmount", UInt],
   ["lockLengthBlocks", UInt],
 ]);
 
@@ -132,8 +127,7 @@ export const main = Reach.App(() => {
     rewardToken,
     beginBlock,
     endBlock,
-    rewardPerBlock,
-    extraAlgoRewardPerBlock,
+    totalRewardAmount,
     lockLengthBlocks
   ) => {
     check(
@@ -157,20 +151,21 @@ export const main = Reach.App(() => {
 
     // If `rewardPerBlock == 0`, then `totalRewardAmount == 0` and we have div by zero in `getAlgoReward`.
     // So we cannot have zero reward per block without fully duplicating the reward logic for ALGO rewards.
-    check(rewardPerBlock > 0);
-    check(rewardPerBlock < UInt.max - MAX_FLAT_ALGO_CREATION_FEE);
-    check(extraAlgoRewardPerBlock < UInt.max - MAX_FLAT_ALGO_CREATION_FEE);
+    // check(rewardPerBlock > 0);
+    check(totalRewardAmount > 0);
+    // check(rewardPerBlock < UInt.max - MAX_FLAT_ALGO_CREATION_FEE);
+    // check(extraAlgoRewardPerBlock < UInt.max - MAX_FLAT_ALGO_CREATION_FEE);
     check(flatAlgoCreationFee <= MAX_FLAT_ALGO_CREATION_FEE);
 
     // overflow assumes
     // 1. This avoids any overflow problems with totalRewards/creationFee calculation. However, this adds an upper bound
     // on rewardPerBlock which is not necessary to be that small. It is __for sure__ still big enough for any
     // farm with any token with a sane number of decimals, but who knows...
-    check(rewardPerBlock < UInt.max / ((endBlock - beginBlock) * FEE_RATIO));
-    check(
-      extraAlgoRewardPerBlock + flatAlgoCreationFee <
-        UInt.max / ((endBlock - beginBlock) * FEE_RATIO)
-    );
+    // check(rewardPerBlock < UInt.max / ((endBlock - beginBlock) * FEE_RATIO));
+    // check(
+    //   extraAlgoRewardPerBlock + flatAlgoCreationFee <
+    //     UInt.max / ((endBlock - beginBlock) * FEE_RATIO)
+    // );
   };
 
   init();
@@ -184,8 +179,8 @@ export const main = Reach.App(() => {
       rewardToken,
       beginBlock,
       endBlock,
-      rewardPerBlock,
-      extraAlgoRewardPerBlock,
+      totalRewardAmount,
+      totalAlgoRewardAmount,
       lockLengthBlocks,
     } = declassify(interact.getParams());
 
@@ -196,8 +191,7 @@ export const main = Reach.App(() => {
       rewardToken,
       beginBlock,
       endBlock,
-      rewardPerBlock,
-      extraAlgoRewardPerBlock,
+      totalRewardAmount,
       lockLengthBlocks
     );
   });
@@ -210,8 +204,8 @@ export const main = Reach.App(() => {
     rewardToken,
     beginBlock,
     endBlock,
-    rewardPerBlock,
-    extraAlgoRewardPerBlock,
+    totalRewardAmount,
+    totalAlgoRewardAmount,
     lockLengthBlocks
   );
 
@@ -222,13 +216,13 @@ export const main = Reach.App(() => {
     rewardToken,
     beginBlock,
     endBlock,
-    rewardPerBlock,
-    extraAlgoRewardPerBlock,
+    totalRewardAmount,
     lockLengthBlocks
   );
 
-  const totalRewardAmount = (endBlock - beginBlock) * rewardPerBlock;
-  const totalAlgoRewardAmount = (endBlock - beginBlock) * extraAlgoRewardPerBlock;
+  // const totalRewardAmount = (endBlock - beginBlock) * rewardPerBlock;
+  // const totalAlgoRewardAmount = (endBlock - beginBlock) * extraAlgoRewardPerBlock;
+  const rewardPerBlock = (UInt256(totalRewardAmount) * BIG_NUMBER) / UInt256(endBlock - beginBlock);
 
   const creationFeeToPay = (totalRewardAmount * creationFee) / FEE_RATIO;
   const creationAlgoFeeToPay = (totalAlgoRewardAmount * creationFee) / FEE_RATIO;
@@ -243,7 +237,7 @@ export const main = Reach.App(() => {
   // Amount of staked *stakeToken* for each Creator participant.
   const stakedM = new Map(UInt);
   const staked = (p) => fromSome(stakedM[p], 0);
-  stakedM[Creator] = VIRTUAL_STAKE;
+
   // Amount of *rewardToken* farmed but not claimed for each Creator participant.
   const rewardM = new Map(UInt);
   const reward = (p) => fromSome(rewardM[p], 0);
@@ -267,8 +261,8 @@ export const main = Reach.App(() => {
       rewardToken,
       beginBlock,
       endBlock,
-      rewardPerBlock,
-      extraAlgoRewardPerBlock,
+      totalRewardAmount,
+      totalAlgoRewardAmount,
       lockLengthBlocks,
     })
   );
@@ -281,6 +275,8 @@ export const main = Reach.App(() => {
       rewardPerTokenPaid: rewardPerTokenPaid(addr),
     });
   });
+
+  const min = (a, b) => (a < b ? a : b);
 
   const getAlgoReward = (n) => muldiv(n, totalAlgoRewardAmount, totalRewardAmount);
 
@@ -297,9 +293,11 @@ export const main = Reach.App(() => {
     return [claimedReward, extraAlgoReward];
   };
 
-  const [totalStaked, lastUpdateBlock, rewardPerTokenStored, rewardTokenFees, algoFees] =
+  const [totalStaked, lastUpdateBlock, rewardPerTokenStored, lastZeroStakeBlock, missedRewards, rewardTokenFees, algoFees] =
     parallelReduce([
-      VIRTUAL_STAKE,
+      0,
+      beginBlock,
+      UInt256(0),
       beginBlock,
       UInt256(0),
       creationFeeToPay,
@@ -330,12 +328,24 @@ export const main = Reach.App(() => {
           return next > endBlock || lockFromBlock(p) + lockLengthBlocks <= next;
         };
 
-        const getNewRewardPerToken = () => {
-          const rewardBlocksPassed = UInt256(lastBlockWithRewards() - lastUpdateBlock);
-          const addedReward =
-            (UInt256(rewardPerBlock) * rewardBlocksPassed * BIG_NUMBER) / UInt256(totalStaked);
+        const getMissedRewards = () => {
+          const next = lastBlockWithRewards();
+          if (totalStaked === 0 && lastZeroStakeBlock < next) {
+            const zeroStakeBlocksPassed = UInt256(next - lastZeroStakeBlock);
+            return rewardPerBlock * zeroStakeBlocksPassed;
+          } else {
+            return UInt256(0);
+          }
+        };
 
-          return rewardPerTokenStored + addedReward;
+        const getNewRewardPerToken = () => {
+          if (totalStaked > 0) {
+            const rewardBlocksPassed = UInt256(lastBlockWithRewards() - lastUpdateBlock);
+            const addedReward = (rewardPerBlock * rewardBlocksPassed) / UInt256(totalStaked);
+            return rewardPerTokenStored + addedReward;
+          } else {
+            return rewardPerTokenStored;
+          }
         };
 
         // This MUST be called every time when participant does any action. E.g. stake and unstake.
@@ -366,8 +376,7 @@ export const main = Reach.App(() => {
           })
         );
       })
-      .invariant(staked(Creator) >= VIRTUAL_STAKE)
-      .invariant(totalStaked == balance(stakeToken) + VIRTUAL_STAKE)
+      .invariant(totalStaked == balance(stakeToken))
       .invariant(totalStaked < UInt.max)
       .invariant(
         lastBlockWithRewards() >= lastUpdateBlock &&
@@ -396,10 +405,6 @@ export const main = Reach.App(() => {
           (callback) => {
             const newRewardPerTokenStored = updateReward(this);
 
-            if (isUnlocked(this)) {
-              void claimRewards(this);
-            }
-
             stakedM[this] = staked(this) + toStake;
 
             updateLock(this);
@@ -408,6 +413,8 @@ export const main = Reach.App(() => {
               totalStaked + toStake,
               lastBlockWithRewards(),
               newRewardPerTokenStored,
+              lastZeroStakeBlock,
+              missedRewards + getMissedRewards(),
               rewardTokenFees,
               algoFees,
             ];
@@ -417,10 +424,7 @@ export const main = Reach.App(() => {
       .api_(Api.unstake, (toUnstake) => {
         check(staked(this) <= balance(stakeToken));
         check(toUnstake < UInt.max, "tried to unstake too much really");
-        check(
-          toUnstake + (this === beneficiary ? VIRTUAL_STAKE : 0) <= staked(this),
-          "tried to unstake more than staked on record"
-        );
+        check(toUnstake <= staked(this), "tried to unstake more than staked on record");
 
         return [
           [0, [0, stakeToken], [0, rewardToken]],
@@ -433,18 +437,20 @@ export const main = Reach.App(() => {
             if (!isUnlocked(this)) {
               rewardM[this] = 0;
             }
-            void claimRewards(this);
 
             stakedM[this] = staked(this) - toUnstake;
 
             transfer([[toUnstake, stakeToken]]).to(this);
 
+            const newTotalStaked = totalStaked - toUnstake;
             updateLock(this);
             callback(timed(UInt, toUnstake));
             return [
-              totalStaked - toUnstake,
+              newTotalStaked,
               lastBlockWithRewards(),
               newRewardPerTokenStored,
+              newTotalStaked > 0 ? lastZeroStakeBlock : nextBlock(),
+              missedRewards,
               rewardTokenFees + lostReward,
               algoFees + lostAlgoReward,
             ];
@@ -472,6 +478,8 @@ export const main = Reach.App(() => {
               totalStaked,
               lastBlockWithRewards(),
               newRewardPerTokenStored,
+              lastZeroStakeBlock,
+              missedRewards,
               rewardTokenFees,
               algoFees,
             ];
@@ -484,12 +492,29 @@ export const main = Reach.App(() => {
         return [
           [0, [0, stakeToken], [0, rewardToken]],
           (callback) => {
-            transfer([algoFees, [rewardTokenFees, rewardToken]]).to(beneficiary);
-            callback(timed(Tuple(UInt, UInt), [rewardTokenFees, algoFees]));
-            return [totalStaked, lastUpdateBlock, rewardPerTokenStored, 0, 0];
+            const newMissedRewards = missedRewards + getMissedRewards();
+            const missed = UInt(newMissedRewards / BIG_NUMBER);
+            const algoMissed = getAlgoReward(missed);
+
+            // I don't want to do all the invariant stuff for this, so make this minimum to make the validator shut up
+            const tokenToClaim = min(rewardTokenFees + missed, balance(rewardToken));
+            const algoToClaim = min(algoMissed + algoFees, balance());
+
+            transfer([algoToClaim, [tokenToClaim, rewardToken]]).to(beneficiary);
+            callback(timed(Tuple(UInt, UInt), [tokenToClaim, algoToClaim]));
+            return [
+              totalStaked,
+              lastUpdateBlock,
+              rewardPerTokenStored,
+              nextBlock(),
+              newMissedRewards - UInt256(missed) * BIG_NUMBER, // do not just set to 0 because some fractional rewards can be left
+              0,
+              0,
+            ];
           },
         ];
       });
 
   commit();
 });
+
